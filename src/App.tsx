@@ -1,18 +1,22 @@
-import { useState } from "react";
-import { TestComp } from "~/Components";
-import { increment } from "~/Common";
+import React from 'react';
+import Pages from './Pages';
+import { $Action, useDispatch } from './Redux';
 
 function App() {
-  const [count, setCount] = useState(0);
+  const dispatch = useDispatch();
 
-  const handleClick = () => {
-    setCount(increment(count));
+  const onClick = (path: string) => () => {
+    dispatch($Action.routerActions.push(path));
   };
 
   return (
     <div className="App">
-      <TestComp count={count} />
-      <button onClick={handleClick}>increment</button>
+      <div>
+        <button onClick={onClick('/')}>home</button>
+        <button onClick={onClick('/about')}>about</button>
+        <button onClick={onClick('/test')}>not found</button>
+      </div>
+      <Pages />
     </div>
   );
 }
