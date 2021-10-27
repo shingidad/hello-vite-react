@@ -1,7 +1,9 @@
 import { routerActions } from 'connected-react-router';
+import * as authActions from './src/auth.action';
 
 const Default = {
-	routerActions,
+  routerActions,
+  authActions,
 };
 
 export default Default;
