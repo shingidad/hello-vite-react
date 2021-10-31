@@ -1,514 +1,388 @@
-`Redux` 를 실무에서 사용하다보면 `Middleware`에 기능을 상당히 많이 사용하게 됩니다.
-
-`Middleware` 를 많이 사용하는 이유는 간단하게 아래 Flowchart 구성대로면,
-`Store` 는  `View` 에게 전달하고,  `View`는 다시 `Action` 을 호출한다.
-즉,  `View`  = `Controller` 가 되는 대 참사가 됩니다. 
+# [느린게 싫다면-03] React + Mobx 를 활용해 VirtualList 만들기
 
 
 
-```mermaid
-flowchart LR
-   Action --> Dispatch --> Store --> View -->Action
+Web에서는 흔히 `VirtualList` 라고 부르며, 안드로이드에서는 [RecyclerView](https://developer.android.com/guide/topics/ui/layout/recyclerview?hl=ko), `Recycle ListView` 라고 한다.
+
+왜 이런 `VirutalList` 등을 사용해야 하는지는 브라우저에 동작 방법을 이해하고 있다면, 쉽게 알 수 있습니다.([NAVER D2](https://d2.naver.com/helloworld/59361) 참고!)
+
+
+
+만약 Scroll에 Row에 해당되는 Dom이 20,000개 정도라면, 이걸 단순 화면에 for...문으로 그리면 정말 말도 안돼며,
+최적화 한다고 500개씩 로드 했다(Lazy) 하더라도 그건 초기 그리는 속도만 향상될 뿐이지, 전체적인 성능에는 큰 도움이 되지 않습니다.
+
+
+
+**오늘은 Mobx 를 사용해서 이런 VirtualList 를 간단하게 만들어 보겠습니다.**
+
+
+
+> Mobx와 Redux를 고민하는 분들이 가끔있는데, 서로 충돌하는 라이브러리도 아니며, 프로젝트에 맞게 사용하면 좋을 것 같습니다.
+> 전 scenario 해당 되는 부분은 Redux, interactive에 해당되는 부분은 Mobx로 주로 개발합니다.
+
+
+
+## 개발
+
+간단한 개념을 위해서 만든 프로젝트이기에 여러 상황에 대해서는 처리 안했으며, 최대한 직관적으로만 작성했습니다.
+
+
+
+```shell
+yarn add mobx mobx-react styled-components
 ```
 
 
 
-### 매우 안좋은 코드 예
+### 1. Store 생성
 
-Redux `Store` 에 Login 정보가 변경되는 상태를 `View` 내부에서 `useEffect`를 이용해 상태를 확인해 다른 페이지로 변경한다.
+`src/Components/VirtualList/src/VirtualListStore.ts`
 
-```jsx
-// #####################################
-// #### 매우 안좋은 코드  매우 안좋은 코드  ####
-// #####################################
+```typescript
+import { action, autorun, computed, makeObservable, observable } from 'mobx';
+import React from 'react';
 
-import React, { useEffect } from 'react';
-import { useDispatch, useStore } from 'react-redux';
-import { useHistory } from 'react-router';
+const nonNan = (num: number): number => (isNaN(num) ? 0 : num);
 
-export const BadCodeComponent = () => {
-  const history = useHistory();
-  const [id, setID] = useState();
-  const [pw, setPW] = useState();
+const createNumList = (count: number, startIndex: number = 0) =>
+  Array.from({ length: count }, (_, i) => i + startIndex);
 
-  const dispatch = useDispatch();
-  const isLogin = useStore((store) => store.auth.isLogin);
+export class VirtualListStore {
+  /**
+   * Dom에 높이
+   */
+  @observable
+  public height: number = 0;
 
-  const onSubmit = (e) => {
-    e.preventDefault();
-    dispatch(login(id, pw));
-  };
+  /**
+   * 줄 높이
+   */
+  @observable
+  public rowHeight: number = 0;
 
-  useEffect(() => {
-    if (isLogin) {
-      history.replace('/')
+  /**
+   * Scrop Top(Y)
+   */
+  @observable
+  public scrollTop: number = 0;
+
+  /**
+   * Row 최대 갯수
+   */
+  @observable
+  public totalRow: number = 0;
+
+  /**
+   * Index 를 답는 Map
+   */
+  @observable
+  public indexMap: Map<number, number> = new Map();
+
+  /**
+   * 화면에 보여지는 row에 갯수
+   */
+  @computed
+  public get visibleRowCount() {
+    if (this.rowHeight === 0 || this.height === 0) {
+      return 0;
     }
-  }, [isLogin]);
-
-  return (
-    <div>
-      <form onSubmit={onSubmit}>
-        <input type="text" value={id} onChange={(e) => setID(e.target.value)} />
-        <input
-          type="password"
-          value={pw}
-          onChange={(e) => setPW(e.target.value)}
-        />
-      </form>
-    </div>
-  );
-};
-
-```
-
-> View에서 전역 상태를 체크해 관리하는 코드는 매우 안좋습니다.
-
-
-
-## Middleware를 사용해서 제대로 만들기
-
-복잡해 보이는 구조이지만, 실제 설정이 완료된 이후 개발을 진행한다면 확장, 관리 측면에서 매우 좋습니다.
-
-```mermaid
-flowchart LR
-   Store --> Middleware --> Action
-   Action --> Dispatch --> Store --> View -->Action
-
-```
-
-1. 로그인 요청
-2. 로그인 완료
-3. about 페이지 이동
-
-```mermaid
-sequenceDiagram
-	autonumber
-  HomePage->>Dispatch : 로그인 요청
-  Dispatch->>Store: Reducer Filter
-  Store->>Epic: 로그인 요청 액션 Filter
-  Epic->>Service: 로그인 처리
-  Service-->>Epic: 결과 전달
-  Epic->>Dispatch: 결과 액션/Paylaod
-  Dispatch->>Store: Store 데이터 갱신
-  Store->>Epic: 결과 액션
-  Epic->>Dispatch: 페이지 이동 Dispatch
-  Dispatch->>Store: about 페이지 이동
-```
-
-
-
-### 1. Package 설치
-
-```bash
-yarn add redux-observable rxjs
-```
-
-* [redux-observable](https://redux-observable.js.org/) : 비동기 처리, 미들웨어 설정, Epic 생성
-* [rxjs](https://rxjs.dev/) : Reactive Programming 에 대표적인 라이브러리
-
-
-
-## 2. 코드 작성 -Service,Redux(Epic,Middleware)
-
-### 2-1. Type 추가
-
-`src/@types/common.d.ts` 전체에서 사용할 Type 지정
-
-```typescript
-declare global {
-  /**
-   * 로그인 완료 Response Body
-   */
-  interface LoginResponseBody {
-    token: string;
-    isLogin: boolean;
+    const count = this.height / this.rowHeight;
+    if (isNaN(count) || count === 0) {
+      return 0;
+    }
+    return Math.ceil(count) + 1;
   }
-  /**
-   * 로그인 Request Body
-   */
-  interface LoginRequestBody {
-    id: string;
-    password: string;
+
+  @computed
+  public get lastIndex() {
+    return Math.max(this.totalRow - this.visibleRowCount, 0);
   }
-}
 
-export {};
+  @computed
+  public get index() {
+    const nextIndex = Math.floor(this.scrollTop / this.rowHeight);
 
-```
+    return nextIndex >= this.lastIndex ? this.lastIndex : nextIndex;
+  }
 
+  @observable
+  public indexList: number[] = [];
 
+  constructor() {
+    makeObservable(this);
+    autorun(() => {
+      const gap = this.visibleRowCount;
+      const index = this.index;
 
-### 2-2. Service 추가
+      const beforeRowIndex = Math.floor(index / gap);
+      const colIndex = Math.floor(index % gap);
 
-```
-.
-├── Services
-│   ├── index.ts
-│   ├── src
-│   │   └── authService.ts
-│   └── types.d.ts
-```
+      const afterRowIndex =
+        colIndex === 0 ? beforeRowIndex : beforeRowIndex + 1;
+      const leftIndex = afterRowIndex * gap;
+      const LeftEndIndex = leftIndex + colIndex;
+      const rightIndex = nonNan(beforeRowIndex * gap + colIndex);
+      const rightEndIndex = nonNan(
+        rightIndex + (gap - (LeftEndIndex - leftIndex))
+      );
 
-
-
-##### `src/Services/src/authService.ts` : 로그인 `async` 추가
-
-```typescript
-// Example 코드입니다. Promise API 등을 연결하는 용도
-export const login = (
-  loginRequestBody: LoginRequestBody
-): Promise<LoginResponseBody> => {
-  return new Promise<LoginResponseBody>((resolve) => {
-    const { id, password } = loginRequestBody;
-    setTimeout(() => {
-      resolve({ isLogin: true, token: `example-${id}-${password}` });
-    }, 500);
-  });
-};
-```
-
-
-
-###### `src/Services/index.ts` : 내보내기
-
-```typescript
-import * as authService from './src/authService';
-
-const Default = {
-  authService,
-};
-
-export default Default;
-
-```
-
-
-
-##### `src/Services/types.d.ts` :  `typesafe-actions` 에 Service type 추가
-
->  이 부분은 필수 항목은 아닙니다. 단지 개발을 쉽게 하기 위해 작성했습니다.
-
-```typescript
-import {} from 'typesafe-actions';
-
-declare module 'typesafe-actions' {
-  export type Service = typeof import('./index').default;
-}
-```
-
-
-
-### 2-3. Action,Reducer 추가
-
-```
-├── Redux
-│   ├── index.ts
-│   └── src
-│       ├── actions
-│       │   ├── index.ts
-│       │   └── src
-│       │       └── auth.action.ts
-│       ├── reducers
-│       │   ├── index.ts
-│       │   └── src
-│       │       └── auth.reduce.ts
-│       ├── store.ts
-│       └── type.d.ts
-```
-
-
-
-##### `src/Redux/src/actions/src/auth.action.ts` : `Async` Action 생성
-
-```typescript
-import { createAsyncAction } from 'typesafe-actions';
-
-export const requestLogin = createAsyncAction(
-  '@@LOGIN/LOGIN/REQUEST', // 요청
-  '@@LOGIN/LOGIN/SUCCESS', // 성공
-  '@@LOGIN/LOGIN/FAIL' // 실패
-)<
-  // 요청 타입
-  LoginRequestBody,
-  // 성공 타입
-  LoginResponseBody,
-  // 실패 타입
-  number
->();
-```
-
-
-
-##### `src/Redux/src/actions/index.ts` :  Action 내보내기
-
-```typescript
-import { routerActions } from 'connected-react-router';
-import * as authActions from './src/auth.action';
-
-const Default = {
-  routerActions,
-  authActions,
-};
-
-export default Default;
-
-```
-
-
-
-##### `src/Redux/src/reducers/src/auth.reducer.ts` : Reducer 추가
-
-```typescript
-import { createReducer } from 'typesafe-actions';
-import produce from 'immer';
-import $Actions from '../../actions';
-
-type LoginStore = {
-  isLogin: boolean;
-  count: number;
-};
-
-const loginReducer = createReducer<LoginStore>({
-  isLogin: false,
-  count: 0,
-}).handleAction(
-  $Actions.authActions.requestLogin.success,
-  (state, { payload }) => {
-    const { isLogin } = payload;
-    return produce(state, (draft) => {
-      draft.isLogin = isLogin;
+      this.setIndexList([
+        ...createNumList(LeftEndIndex - leftIndex, leftIndex),
+        ...createNumList(rightEndIndex - rightIndex, rightIndex),
+      ]);
     });
   }
-);
 
-export default loginReducer;
-```
-
-
-
-##### `src/Redux/src/reducers/src/index.ts` :  Reducer 내보내기
-
-```typescript
-import { connectRouter } from 'connected-react-router';
-import { createBrowserHistory } from 'history';
-import { combineReducers } from 'redux';
-import auth from './src/auth.reducer';
-
-export const history = createBrowserHistory();
-
-const rootReducer = combineReducers({ router: connectRouter(history), auth });
-
-export default rootReducer;
-
-```
-
-
-
-### 2-4. Epic 추가
-
-```
-├── Redux
-│   ├── index.ts
-│   └── src
-│       ├── actions
-│       │   ├── index.ts
-│       │   └── src
-│       │       └── auth.action.ts
-│       ├── epics
-│       │   ├── index.ts
-│       │   └── src
-│       │       └── auth.epic.ts
-```
-
-
-
-##### `src/Redux/src/epics/src/auth.epic.ts` : auth epic 추가
-
-```typescript
-import { CallHistoryMethodAction } from 'connected-react-router';
-import { LocationDescriptorObject } from 'history';
-import { Epic } from 'redux-observable';
-import { catchError, filter, from, map, of, switchMap, tap } from 'rxjs';
-import { isActionOf, RootAction, RootState, Service } from 'typesafe-actions';
-import actions from '../../actions';
-
-/**
- * 로그인 액션이 온다면 service에 login을 요청한다.
- * @param action$ 
- * @param store$ 
- * @param service$ 
- * @returns 
- */
-export const requestLoginEpic: Epic<
-  RootAction,
-  RootAction,
-  RootState,
-  Service
-> = (action$, store$, service$) =>
-  action$.pipe(
-    // 로그인 request 액션 구분 filter
-    filter(isActionOf(actions.authActions.requestLogin.request)),
-    switchMap(({ payload }) =>
-      // 서비스에 로그인 요청
-      from(service$.authService.login(payload)).pipe(
-        // 성공시 로그인 성공 액션 발생
-        map(actions.authActions.requestLogin.success),
-        // 실패시 로그인 실패 액션 발생
-        catchError((e: Error) => {
-          console.log(e.message);
-          return of(actions.authActions.requestLogin.failure(401));
-        })
-      )
-    )
-  );
-
-/**
- * 로그인 완료 된 이후 이동할 페이지 설정
- * @param action$
- * @returns
- */
-export const pageLoginEpic: Epic<
-  RootAction,
-  CallHistoryMethodAction<[LocationDescriptorObject<unknown>]>,
-  RootState,
-  Service
-> = (action$) =>
-  action$.pipe(
-    // 로그인 성공 액션 구분 filter
-    filter(isActionOf(actions.authActions.requestLogin.success)),
-    // 로그인 성공 액션을 발생한 이후 페이지 이동 액션 발생
-    map(() =>
-      actions.routerActions.replace({
-        pathname: '/about',
-      })
-    )
-  );
-
-```
-
-
-
-`src/Redux/src/epics/index.ts` : epic 내보내기
-
-```typescript
-import { combineEpics } from 'redux-observable';
-import * as authEpic from './src/auth.epic';
-
-export default combineEpics(...Object.values(authEpic));
-```
-
-
-
-##### 2-5. Store Middleware 추가 
-
-위에서 새로 추가한 `Epic` 과 `Service` 를 Store에 추가해준다.
-
-```typescript
-import { routerMiddleware } from 'connected-react-router';
-import { applyMiddleware, compose, createStore, PreloadedState } from 'redux';
-import { createEpicMiddleware } from 'redux-observable';
-import { RootAction, RootState, Service } from 'typesafe-actions';
-import reducer, { history } from './reducers';
-import services from '../../Services';
-import epics from './epics';
-
-declare global {
-  interface Window {
-    __REDUX_DEVTOOLS_EXTENSION_COMPOSE__?: typeof compose;
+  @action
+  private setIndexList(nextIndexList: number[]) {
+    nextIndexList.forEach((value, index) => {
+      this.indexMap.set(index, value);
+    });
   }
 }
 
-const initialState: PreloadedState<RootState> = {};
+const VirtualListContext = React.createContext<VirtualListStore>(
+  new VirtualListStore()
+);
 
-// Redux Devtools 연결
-const composeEnhancers =
-  (process.env.NODE_ENV === 'development' &&
-    window &&
-    window.__REDUX_DEVTOOLS_EXTENSION_COMPOSE__) ||
-  compose;
+export const VirtualListProvider = VirtualListContext.Provider;
 
-/**
- * Epic Middleware 생성
- */
-export const epicMiddleware = createEpicMiddleware<
-  RootAction,
-  RootAction,
-  RootState,
-  Service
->({
-  dependencies: services, // 서비스 추가
-});
+export const useVirtualListSelector = () =>
+  React.useContext(VirtualListContext);
 
-const middlewares = [epicMiddleware, routerMiddleware(history)];
-
-const enhancer = composeEnhancers(applyMiddleware(...middlewares));
-
-const store = createStore(reducer, initialState, enhancer);
-// epic 실행
-epicMiddleware.run(epics);
-
-export default store;
 ```
 
 
 
 
 
-### 3. 코드작성 Page
+### 2. Item / Body
 
-3-1. `src/Pages/src/HomePage.tsx` 
-
-1. 로그인이 `false` 라면 로그인 창을 보여준다.
-2. 로그인 입력시 `Action` 을 보낸다.
-3. 로그인 완료시 `true` 로그인 성공을 표기한다.
+`src/Components/VirtualList/src/VirtualListBody.tsx`
 
 ```tsx
-// src/Pages/src/HomePage.tsx
-import React from 'react';
-import { $Action, useDispatch } from '~/Redux';
-import { useSelector } from '~/Redux';
+import isEqual from 'fast-deep-equal';
+import { observer } from 'mobx-react';
+import React, { HTMLProps, useMemo } from 'react';
+import styled from 'styled-components';
+import { useVirtualListSelector } from './VirtualListStore';
 
-const LoginForm = () => {
-  const dispatch = useDispatch();
+interface RowItemProps
+  extends Pick<HTMLProps<HTMLDivElement>, 'children' | 'className'> {
+  rowHeight: number;
+  index?: number;
+}
 
-  const onSubmit = (
-    e: Parameters<Required<React.HTMLProps<HTMLFormElement>>['onSubmit']>[0]
-  ) => {
-    e.preventDefault();
-    const data = new FormData(e.currentTarget);
-    const id = String(data.get('id'));
-    const password = String(data.get('password'));
+const RowItem = styled(({ className, children }: RowItemProps) => {
+  return <div className={className}>{children}</div>;
+})`
+  position: absolute;
+  z-index: -1;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+  top: ${({ rowHeight, index = 0 }) => rowHeight * index}px;
+  height: ${(props) => props.rowHeight}px;
+  display: ${({ index = -1 }) => (index > -1 ? 'block' : 'none')};
+`;
 
-    dispatch(
-      $Action.authActions.requestLogin.request({
-        id,
-        password,
-      })
-    );
+interface VirtualListItemProps {
+  index: number;
+  renderRow: (index: number) => React.ReactNode;
+}
+
+const VirtualListItem = observer((props: VirtualListItemProps) => {
+  const { index, renderRow } = props;
+  const { rowHeight, indexMap } = useVirtualListSelector();
+  const data = indexMap.get(index);
+  return (
+    <RowItem rowHeight={rowHeight} index={data}>
+      {typeof data === 'number' && renderRow(data)}
+    </RowItem>
+  );
+});
+
+interface ScrollBodyProps
+  extends Pick<HTMLProps<HTMLDivElement>, 'children' | 'className'> {
+  height: number;
+}
+
+const ScrollBody = styled(({ children, className }: ScrollBodyProps) => (
+  <div className={className}>{children}</div>
+))`
+  position: relative;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: ${({ height }) => height}px;
+`;
+
+interface VirtualListBodyProps
+  extends Pick<VirtualListItemProps, 'renderRow'> {}
+
+const VirtualListBody: React.FC<VirtualListBodyProps> = observer((props) => {
+  const { renderRow } = props;
+  const { visibleRowCount, totalRow: dataCount, rowHeight } = useVirtualListSelector();
+
+  const bodyHeight = useMemo(
+    () => dataCount * rowHeight,
+    [rowHeight, dataCount]
+  );
+
+  return (
+    <ScrollBody height={bodyHeight}>
+      {Array.from({ length: visibleRowCount }, (_, i) => (
+        <VirtualListItem key={i} index={i} renderRow={renderRow} />
+      ))}
+    </ScrollBody>
+  );
+});
+
+export default React.memo(VirtualListBody, isEqual);
+
+```
+
+
+
+
+
+
+
+### 3. Container 
+
+`src/Components/VirtualList/src/VirtualList.tsx`
+
+```tsx
+import isEqual from 'fast-deep-equal';
+import React, { ComponentProps, useEffect, useRef } from 'react';
+import styled from 'styled-components';
+import VirtualListBody from './VirtualListBody';
+import { VirtualListProvider, VirtualListStore } from './VirtualListStore';
+
+interface VirtualListProps
+  extends Pick<ComponentProps<typeof VirtualListBody>, 'renderRow'>,
+    Pick<VirtualListStore, 'rowHeight' | 'totalRow'> {}
+
+const RootContainer = styled.div`
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+`;
+
+const VirtualList: React.FC<VirtualListProps> = (props) => {
+  const { rowHeight, totalRow, renderRow } = props;
+  const refStore = useRef(new VirtualListStore());
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current) {
+      return;
+    }
+    const { clientHeight } = ref.current;
+    refStore.current.height = clientHeight;
+    refStore.current.rowHeight = rowHeight;
+  }, [rowHeight]);
+
+  useEffect(() => {
+    refStore.current.totalRow = totalRow;
+  }, [totalRow]);
+
+  const handleScroll = React.useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      refStore.current.scrollTop = e.currentTarget.scrollTop;
+    },
+    [refStore.current]
+  );
+
+  return (
+    <VirtualListProvider value={refStore.current}>
+      <RootContainer ref={ref} onScroll={handleScroll}>
+        <VirtualListBody renderRow={renderRow} />
+      </RootContainer>
+    </VirtualListProvider>
+  );
+};
+
+export default React.memo(VirtualList, isEqual);
+
+```
+
+
+
+### 4. 내보내기
+
+`src/Components/VirtualList/index.ts`
+
+```typescript
+export { default as VirtualList } from './src/VirtualList';
+```
+
+
+
+`src/Components/index.ts`
+
+```typescript
+export * from './VirtualList';
+```
+
+
+
+### 5. 사용해보기
+
+`src/Pages/src/AboutPage.tsx`
+
+```tsx
+// src/Pages/src/AboutPage.tsx
+import React, { useState } from 'react';
+import styled from 'styled-components';
+import { VirtualList } from '~/Components/VirtualList';
+
+const ListContainer = styled.div`
+  width: 360px;
+  height: 500px;
+`;
+
+const randomColor = () =>
+  '#' + Math.round(Math.random() * 0xffffff).toString(16);
+
+const Item = styled.div`
+  height: 100px;
+  width: 100%;
+  font-size: 48px;
+  font-weight: bold;
+`;
+
+const AboutPage = () => {
+  const [list, setList] = useState(Array.from({ length: 65000 }, (_, i) => i));
+
+  const handleClick = () => {
+    setList((beforeList) => {
+      return [...beforeList, beforeList.length];
+    });
   };
 
   return (
-    <form onSubmit={onSubmit}>
-      <input name="id" placeholder="id" />
-      <br />
-      <input name="password" placeholder="password" type="password" />
-      <br />
-      <button type="submit">Submit</button>
-    </form>
-  );
-};
-const HomePage = () => {
-  const isLogin = useSelector(({ auth }) => auth.isLogin);
-
-  return (
     <div>
-      <h1>Home Page</h1>
-      {isLogin ? <div>로그인 성공</div> : <LoginForm />}
+      <button onClick={handleClick}>add row</button>
+      <ListContainer>
+        <VirtualList
+          rowHeight={100}
+          totalRow={list.length}
+          renderRow={(index) => {
+            return (
+              <Item style={{ backgroundColor: randomColor() }}>{index}</Item>
+            );
+          }}
+        />
+      </ListContainer>
     </div>
   );
 };
 
-export default HomePage;
+export default AboutPage;
 
 ```
 
+
+
+65,000개 아이템을 그리더라도 실제 화면에는 6개에 Row만 존재해, 성능이 많이 개선됩니다.

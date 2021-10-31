@@ -44,7 +44,16 @@ const tsConfigAlias = (typeScriptConfig: TSConfig): Alias[] => {
 };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react({
+      fastRefresh: true,
+      babel: {
+        parserOpts: {
+          plugins: ['decorators-legacy'],
+        },
+      },
+    }),
+  ],
   resolve: {
     alias: tsConfigAlias(tsConfig),
   },

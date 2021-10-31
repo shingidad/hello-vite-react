@@ -1,9 +1,9 @@
 // src/Pages/index.tsx
-import React from "react";
-import { Route, Switch } from "react-router";
-import AboutPage from "./src/AboutPage";
-import HomePage from "./src/HomePage";
-import NotFoundPage from "./src/NotFoundPage";
+import React from 'react';
+import { Route, Switch } from 'react-router';
+import AboutPage from './src/AboutPage';
+import HomePage from './src/HomePage';
+import NotFoundPage from './src/NotFoundPage';
 
 const Pages = () => {
   return (
